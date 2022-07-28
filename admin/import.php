@@ -9,6 +9,16 @@
 
 include_once dirname(__FILE__) . "/../ZipLib.class.php";
 
+if (!function_exists('str_starts_with')) {
+  function str_starts_with($haystack, $needle, $case = true)
+  {
+    if ($case) {
+      return strpos($haystack, $needle, 0) === 0;
+    }
+    return stripos($haystack, $needle, 0) === 0;
+  }
+}
+
 class admin_plugin_advanced_import extends DokuWiki_Admin_Plugin
 {
 
@@ -95,7 +105,8 @@ class admin_plugin_advanced_import extends DokuWiki_Admin_Plugin
         $overwrite_pages = ($INPUT->str('overwrite-existing-pages') == 'on' ? true : false);
         $files           = array_keys($INPUT->arr('files'));
         $ns              = $INPUT->str('ns');
-        $imported_pages  = array();
+	$imported_pages  = array();
+	$imported_media  = array();
 
         if ($ns == '(root)') {
             $ns = '';
@@ -106,19 +117,48 @@ class admin_plugin_advanced_import extends DokuWiki_Admin_Plugin
             return 0;
         }
 
-        $Zip = new ZipLib;
+        $Zip = new ZipArchive;
 
-        if (!$Zip->extract($archive_file, $extract_dir)) {
+        if (!$Zip->open($archive_file)) {
             msg($this->getLang('imp_zip_extract_error'), -1);
             return 0;
-        }
+	}
+
+	$Zip->extractTo($extract_dir);
+	$Zip->close();
 
         if (!count($files)) {
             msg($this->getLang('imp_no_page_selected'), -1);
             return 0;
-        }
+	}
 
-        foreach ($files as $file) {
+	$media_files = array_filter($files, function ($v) { return str_starts_with($v, '.media'); });
+	$page_files = array_filter($files, function ($v) { return !str_starts_with($v, '.media'); });
+
+	foreach ($media_files as $file) {
+		$source_path = "$extract_dir/$file";
+		$media_id = str_replace('/', ':', str_replace('.media/', '', $file));
+		$media_id = cleanID("$ns:$media_id");
+
+		$dest_path = mediaFN($media_id);
+		dbglog($dest_path);
+
+		if (file_exists($dest_path) && !$overwrite_pages) {
+		    msg(sprintf($this->getLang('imp_page_already_exists'), $dest_path), 2);
+		    continue;
+		}
+
+		list($ext,$mime) = mimetype($id);
+		$file = array('name' => $source_path, 'ext'=> $ext, 'mime' => $mime);
+		media_save($file, $media_id, true,  AUTH_ADMIN, "copy");
+
+		# copy($source_path, $dest_path);
+		# media_metasave($media_id, AUTH_ADMIN, );
+
+		$imported_media[] = $dest_path;
+	}
+
+        foreach ($page_files as $file) {
 
             $wiki_page = str_replace('/', ':', preg_replace('/\.txt$/', '', $file));
             $wiki_page = cleanID("$ns:$wiki_page");
@@ -147,12 +187,12 @@ class admin_plugin_advanced_import extends DokuWiki_Admin_Plugin
         }
 
         # Delete import archive
-        unlink($archive_file);
+	unlink($archive_file);
 
         # Delete the extract directory
         io_rmdir($extract_dir, true);
 
-        if (count($imported_pages)) {
+	if (count($imported_pages) + count($imported_media)) {
             msg($this->getLang('imp_pages_import_success'));
         }
 
